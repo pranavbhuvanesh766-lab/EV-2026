@@ -1,0 +1,94 @@
+#include <Romi32U4.h>
+#include <PID_v1.h>
+
+Romi32U4Motors motors;
+Romi32U4Encoders encoders;
+
+// ---------- TUNABLE CONSTANTS ----------
+
+// Wheel + encoder
+const double WHEEL_DIAMETER_M    = 0.070;     // <--- change if wheel size different
+const double TICKS_PER_REV       = 1440.0;    // <--- change if your encoder counts differ
+
+// Target distance
+const double TARGET_DISTANCE_M   = 10.0;      // <--- distance to drive (meters)
+const long   DIST_TOL_TICKS      = 10;        // <--- how close before stopping (ticks)
+
+// PID (distance)
+double Kp = 0.7;                             // <--- tune these
+double Ki = 0.01;
+double Kd = 0.45;
+
+// Heading correction
+double K_heading = 0.05;                    // <--- tune to fix veering
+
+// ---------- DERIVED VALUES (NO NEED TO TOUCH) ----------
+const double WHEEL_CIRCUMFERENCE = 3.14159 * WHEEL_DIAMETER_M;
+const double TICKS_PER_METER     = TICKS_PER_REV / WHEEL_CIRCUMFERENCE;
+
+// PID variables
+double SetpointTicks;
+double InputTicks;
+double OutputSpeed;
+
+PID distancePID(&InputTicks, &OutputSpeed, &SetpointTicks, Kp, Ki, Kd, DIRECT);
+
+bool targetReached = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  encoders.getCountsAndResetLeft();
+  encoders.getCountsAndResetRight();
+
+  SetpointTicks = TARGET_DISTANCE_M * TICKS_PER_METER;
+
+  distancePID.SetMode(AUTOMATIC);
+  distancePID.SetOutputLimits(-300, 300);
+  distancePID.SetSampleTime(10);
+}
+
+void loop() {
+  if (targetReached) {
+    motors.setSpeeds(0, 0);
+    return;
+  }
+
+  long leftTicks  = encoders.getCountsLeft();
+  long rightTicks = encoders.getCountsRight();
+
+  double avgTicks = 0.5 * ((double)leftTicks + (double)rightTicks);
+  InputTicks = avgTicks;
+
+  long distErrTicks = (long)(SetpointTicks - InputTicks);
+
+  if (abs(distErrTicks) <= DIST_TOL_TICKS) {
+    targetReached = true;
+    motors.setSpeeds(0, 0);
+    return;
+  }
+
+  distancePID.Compute();   // fills OutputSpeed
+
+  long headingErrTicks = leftTicks - rightTicks;
+  double headingAdjust = K_heading * (double)headingErrTicks;
+
+  int speedLeft  = (int)(OutputSpeed - headingAdjust);
+  int speedRight = (int)(OutputSpeed + headingAdjust);
+
+  speedLeft  = constrain(speedLeft,  -300, 300);
+  speedRight = constrain(speedRight, -300, 300);
+
+  motors.setSpeeds(speedLeft, speedRight);
+
+  Serial.print("L:");  Serial.print(leftTicks);
+  Serial.print(" R:"); Serial.print(rightTicks);
+  Serial.print(" Avg:"); Serial.print(avgTicks);
+  Serial.print(" Out:"); Serial.print(OutputSpeed);
+  Serial.print(" HE:"); Serial.print(headingErrTicks);
+  Serial.print(" SL:"); Serial.print(speedLeft);
+  Serial.print(" SR:"); Serial.println(speedRight);
+
+  delay(10);
+}
