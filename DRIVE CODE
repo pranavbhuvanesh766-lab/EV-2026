@@ -12,7 +12,7 @@ float leftPrevError = 0, rightPrevError = 0;
 float wheelDiameter = 0.070;                 // 70 mm Romi wheel
 float wheelCirc     = 3.14159 * wheelDiameter;
 float ticksPerRev   = 1440.0;                // Romi encoder resolution
-float wheelBase     = 0.142;                 // Romi wheel separation (14.2 cm) --> CHANGE IT TO CHASSIS LENGTH
+float wheelBase     = 0.127;                 // Romi wheel separation (14.2 cm) --> CHANGE IT TO CHASSIS LENGTH
 
 // Set forward speed (m/s)
 float v = 0.25;
