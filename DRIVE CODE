@@ -1,94 +1,110 @@
 #include <Romi32U4.h>
-#include <PID_v1.h>
 
 Romi32U4Motors motors;
 Romi32U4Encoders encoders;
 
-// ---------- TUNABLE CONSTANTS ----------
+// PID constants
+float Kp = 0.8, Ki = 0.2, Kd = 0.05;
+float leftIntegral = 0, rightIntegral = 0;
+float leftPrevError = 0, rightPrevError = 0;
 
-// Wheel + encoder
-const double WHEEL_DIAMETER_M    = 0.070;     // <--- change if wheel size different
-const double TICKS_PER_REV       = 1440.0;    // <--- change if your encoder counts differ
+// === REAL ROMI DIMENSIONS (Pololu Verified) ===
+float wheelDiameter = 0.070;                 // 70 mm Romi wheel
+float wheelCirc     = 3.14159 * wheelDiameter;
+float ticksPerRev   = 1440.0;                // Romi encoder resolution
+float wheelBase     = 0.142;                 // Romi wheel separation (14.2 cm) --> CHANGE IT TO CHASSIS LENGTH
 
-// Target distance
-const double TARGET_DISTANCE_M   = 10.0;      // <--- distance to drive (meters)
-const long   DIST_TOL_TICKS      = 10;        // <--- how close before stopping (ticks)
+// Set forward speed (m/s)
+float v = 0.25;
 
-// PID (distance)
-double Kp = 0.7;                             // <--- tune these
-double Ki = 0.01;
-double Kd = 0.45;
+// === CHANGE CURVE HERE ===
+float R = 0.30; // meters (0.3 m radius curve)
 
-// Heading correction
-double K_heading = 0.05;                    // <--- tune to fix veering
+// === STOP AT EXACT DISTANCE ===
+float targetDistance = 4.14;  // meters
+float totalDistance = 0;
 
-// ---------- DERIVED VALUES (NO NEED TO TOUCH) ----------
-const double WHEEL_CIRCUMFERENCE = 3.14159 * WHEEL_DIAMETER_M;
-const double TICKS_PER_METER     = TICKS_PER_REV / WHEEL_CIRCUMFERENCE;
+unsigned long lastTime;
 
-// PID variables
-double SetpointTicks;
-double InputTicks;
-double OutputSpeed;
-
-PID distancePID(&InputTicks, &OutputSpeed, &SetpointTicks, Kp, Ki, Kd, DIRECT);
-
-bool targetReached = false;
-
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-
-  encoders.getCountsAndResetLeft();
-  encoders.getCountsAndResetRight();
-
-  SetpointTicks = TARGET_DISTANCE_M * TICKS_PER_METER;
-
-  distancePID.SetMode(AUTOMATIC);
-  distancePID.SetOutputLimits(-300, 300);
-  distancePID.SetSampleTime(10);
+// Convert ticks → speed
+float getWheelSpeed(int ticks, float dt)
+{
+  float revs = ticks / ticksPerRev;
+  float distance = revs * wheelCirc;
+  return distance / dt;  // m/s
 }
 
-void loop() {
-  if (targetReached) {
+// Convert ticks → distance (m)
+float getWheelDistance(int ticks)
+{
+  float revs = ticks / ticksPerRev;
+  return revs * wheelCirc;
+}
+
+float pidControl(float error, float &integral, float &prevError, float dt)
+{
+  integral += error * dt;
+  float derivative = (error - prevError) / dt;
+  prevError = error;
+
+  return Kp * error + Ki * integral + Kd * derivative;
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  encoders.getCountsAndResetLeft();
+  encoders.getCountsAndResetRight();
+  lastTime = micros();
+}
+
+void loop()
+{
+  unsigned long now = micros();
+  float dt = (now - lastTime) / 1e6;
+  if (dt <= 0) return;
+  lastTime = now;
+
+  // --- Compute wheel target speeds for the curve ---
+  float vL = v * (1 - (wheelBase / (2 * R)));
+  float vR = v * (1 + (wheelBase / (2 * R)));
+
+  // --- Encoder data ---
+  int leftTicks  = encoders.getCountsAndResetLeft();
+  int rightTicks = encoders.getCountsAndResetRight();
+
+  float leftSpeed  = getWheelSpeed(leftTicks, dt);
+  float rightSpeed = getWheelSpeed(rightTicks, dt);
+
+  // Compute distances moved
+  float leftDist  = getWheelDistance(leftTicks);
+  float rightDist = getWheelDistance(rightTicks);
+  float centerDist = (leftDist + rightDist) / 2.0;
+
+  // Accumulate total distance
+  totalDistance += centerDist;
+
+  // Print to serial monitor
+  Serial.print("Distance: ");
+  Serial.println(totalDistance);
+
+  // --- STOP AT 4.14 METERS ---
+  if (totalDistance >= targetDistance)
+  {
     motors.setSpeeds(0, 0);
+    Serial.println("STOPPED — Reached 4.14 meters!");
     return;
   }
 
-  long leftTicks  = encoders.getCountsLeft();
-  long rightTicks = encoders.getCountsRight();
+  // --- PID ---
+  float leftError  = vL - leftSpeed;
+  float rightError = vR - rightSpeed;
 
-  double avgTicks = 0.5 * ((double)leftTicks + (double)rightTicks);
-  InputTicks = avgTicks;
+  float leftOutput  = pidControl(leftError,  leftIntegral,  leftPrevError,  dt);
+  float rightOutput = pidControl(rightError, rightIntegral, rightPrevError, dt);
 
-  long distErrTicks = (long)(SetpointTicks - InputTicks);
+  int leftPWM  = constrain(leftOutput * 200,  -400, 400);
+  int rightPWM = constrain(rightOutput * 200, -400, 400);
 
-  if (abs(distErrTicks) <= DIST_TOL_TICKS) {
-    targetReached = true;
-    motors.setSpeeds(0, 0);
-    return;
-  }
-
-  distancePID.Compute();   // fills OutputSpeed
-
-  long headingErrTicks = leftTicks - rightTicks;
-  double headingAdjust = K_heading * (double)headingErrTicks;
-
-  int speedLeft  = (int)(OutputSpeed - headingAdjust);
-  int speedRight = (int)(OutputSpeed + headingAdjust);
-
-  speedLeft  = constrain(speedLeft,  -300, 300);
-  speedRight = constrain(speedRight, -300, 300);
-
-  motors.setSpeeds(speedLeft, speedRight);
-
-  Serial.print("L:");  Serial.print(leftTicks);
-  Serial.print(" R:"); Serial.print(rightTicks);
-  Serial.print(" Avg:"); Serial.print(avgTicks);
-  Serial.print(" Out:"); Serial.print(OutputSpeed);
-  Serial.print(" HE:"); Serial.print(headingErrTicks);
-  Serial.print(" SL:"); Serial.print(speedLeft);
-  Serial.print(" SR:"); Serial.println(speedRight);
-
-  delay(10);
+  motors.setSpeeds(leftPWM, rightPWM);
 }
